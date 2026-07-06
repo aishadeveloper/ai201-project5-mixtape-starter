@@ -22,18 +22,17 @@ def search_songs(query: str) -> list[dict]:
         A list of song dicts. Each dict includes all song fields plus a
         'tags' list of tag name strings.
     """
-    results = (
-        db.session.query(Song)
-        .filter(
-            db.or_(
-                Song.title.ilike(f"%{query}%"),
-                Song.artist.ilike(f"%{query}%"),
-            )
-        )
-        .all()
-    )
+    return [song.to_dict() for song in _search_query(query).all()]
 
-    return [song.to_dict() for song in results]
+
+def _search_query(query: str):
+    """Build the base query for songs whose title or artist matches."""
+    return db.session.query(Song).filter(
+        db.or_(
+            Song.title.ilike(f"%{query}%"),
+            Song.artist.ilike(f"%{query}%"),
+        )
+    )
 
 
 def get_song(song_id: str) -> dict:
