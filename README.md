@@ -130,6 +130,36 @@ elif days_since_last == 1:
 
 The first two failed before the fix (streak stuck at 1) and pass after it; the guard passes in both states. Full suite after the fix: 18/18 passing.
 
+### Bug 2 — Friends Listening Now shows people from yesterday
+
+**Affected service:** `services/feed_service.py` — `get_friends_listening_now()`
+
+**Symptom:** The "Friends Listening Now" feed (`GET /<user_id>/listening-now`) showed friends who had listened up to a full day earlier. Someone who played a song at 9 PM yesterday still appeared as listening "now" at 8 PM today.
+
+**Root cause:** The query logic — filtering friends' listening events by a recency cutoff, ordering newest-first, and deduplicating to one entry per friend — was all correct. The bug was the recency constant itself:
+
+```python
+RECENT_THRESHOLD = timedelta(hours=24)
+```
+
+A 24-hour window means "listened at any point in the past day," not "listening now." The intended window is documented in `seed_data.py`, which seeds events "within the past 30 minutes" as *should appear in "listening now"* and events 2+ hours old as *should NOT appear after fix*. Showing older history is explicitly the job of the separate `get_activity_feed()` function, whose docstring notes it is "not filtered by recency."
+
+**The fix:** Set the threshold to the documented 30-minute window:
+
+```python
+RECENT_THRESHOLD = timedelta(minutes=30)
+```
+
+**How it was diagnosed:** The symptom ("people from yesterday") implied the recency filter was either missing or too wide. Reading `get_friends_listening_now()` showed the filter present and correctly applied, which narrowed the problem to the threshold value. The seed data comments confirmed the intended window (~30 minutes) and the expectation that 2-hour-old events be excluded.
+
+**Regression coverage:** `tests/regression/test_feed_regression.py` (events seeded relative to the real clock, since the service calls `datetime.now`):
+
+- `test_friend_listening_minutes_ago_is_shown` — a friend who listened 10 minutes ago must appear; guards against overcorrecting to a too-narrow window.
+- `test_friend_from_yesterday_is_not_shown` — the reported symptom: a friend who listened ~23 hours ago must not appear.
+- `test_friend_from_hours_ago_is_not_shown` — pins the seed-data contract: a 2-hour-old event must not appear.
+
+The last two failed before the fix and pass after it; the first passes in both states. Full suite after the fix: 21/21 passing.
+
 ### Bug 5 — The last song in a playlist never shows up
 
 **Affected service:** `services/playlist_service.py` — `get_playlist_songs()`
