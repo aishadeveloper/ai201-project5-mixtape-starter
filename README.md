@@ -97,6 +97,39 @@ Full issue descriptions are in the **Project 5 brief**. Read them carefully befo
 
 ## Root Cause Analysis
 
+### Bug 1 — My listening streak keeps resetting
+
+**Affected service:** `services/streak_service.py` — `update_listening_streak()`
+
+**Symptom:** Users who listened every single day still saw their streak collapse back to 1 once a week. From the user's perspective the resets looked random, but they always happened on a Sunday.
+
+**Root cause:** The consecutive-day branch contained a spurious day-of-week condition:
+
+```python
+elif days_since_last == 1 and today.weekday() != 6:
+    user.listening_streak += 1
+else:
+    user.listening_streak = 1
+```
+
+Python's `weekday()` returns 6 for Sunday. So when a user listened on Saturday and again on Sunday, `days_since_last` was 1 (consecutive — should increment), but the `today.weekday() != 6` clause made the condition false, execution fell into the `else`, and the streak was reset to 1. Every user's streak was wiped every Sunday regardless of how consistently they listened. The function's own docstring states the intended rule with no day-of-week exception: "If the user listened yesterday: streak increments by 1."
+
+**The fix:** Remove the spurious weekday clause so consecutiveness is judged purely by calendar-day difference:
+
+```python
+elif days_since_last == 1:
+```
+
+**How it was diagnosed:** `tests/test_streaks.py::test_streak_increments_on_sunday` failed with `assert 1 == 2` — Saturday→Sunday reset instead of incrementing, while Monday→Tuesday incremented fine. A reset that only occurs on one specific weekday, with `days_since_last` logic otherwise correct, pointed directly at the `weekday() != 6` clause in the increment condition.
+
+**Regression coverage:** `tests/regression/test_streak_regression.py`:
+
+- `test_saturday_to_sunday_is_consecutive` — minimal reproduction: Saturday then Sunday must give a streak of 2.
+- `test_week_long_streak_survives_sunday` — the user-visible symptom: listening Monday through Sunday must give a streak of 7, not drop to 1 on day seven.
+- `test_skipping_into_sunday_still_resets` — guard against overcorrection: Friday→Sunday genuinely skips Saturday, so the reset to 1 must still happen.
+
+The first two failed before the fix (streak stuck at 1) and pass after it; the guard passes in both states. Full suite after the fix: 18/18 passing.
+
 ### Bug 5 — The last song in a playlist never shows up
 
 **Affected service:** `services/playlist_service.py` — `get_playlist_songs()`
