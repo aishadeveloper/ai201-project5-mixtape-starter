@@ -160,6 +160,45 @@ RECENT_THRESHOLD = timedelta(minutes=30)
 
 The last two failed before the fix and pass after it; the first passes in both states. Full suite after the fix: 21/21 passing.
 
+### Bug 3 — The same song keeps showing up twice in search
+
+**Affected service:** `services/search_service.py` — `search_songs()`
+
+**Symptom:** A song appeared in search results once per tag it had — a song with three tags showed up three times.
+
+**Root cause:** The search query outer-joined the `song_tags` association table for no reason:
+
+```python
+db.session.query(Song)
+.outerjoin(song_tags, Song.id == song_tags.c.song_id)
+.filter(...)
+```
+
+The join contributed nothing — the filter only references `Song.title` and `Song.artist`, no tag columns are selected, and the tags in each result come from the `Song.tags` relationship inside `to_dict()`, not from this join. Its only effect was row multiplication: joining a song to its N `song_tags` rows yields N identical song rows.
+
+**A subtlety — why the tests passed anyway:** in this environment the duplicates were *masked* by a deprecated side effect of SQLAlchemy's legacy `Query.all()` API, which deduplicates full-entity rows before returning them. Probing the same query showed the defect was real underneath: the service returned 1 result for a 3-tag song, but the SQL produced 3 rows (`.count()` said 3, and a SQLAlchemy 2.0-style execution returned 3). The user-reported duplicates were one pagination call, `.count()` usage, or SQLAlchemy migration away from surfacing.
+
+**The fix:** Remove the spurious join (and the now-unused imports), leaving the title/artist filter untouched:
+
+```python
+db.session.query(Song)
+.filter(
+    db.or_(
+        Song.title.ilike(f"%{query}%"),
+        Song.artist.ilike(f"%{query}%"),
+    )
+)
+```
+
+**How it was diagnosed:** The reported symptom (duplicates proportional to tag count) pointed at a join against the tags table. The join was present but unused by filter or select — and since the existing no-duplicate tests passed, the query was probed directly, comparing the service's output count against the raw SQL row count (1 vs 3), confirming latent row multiplication hidden by legacy-Query deduplication.
+
+**Regression coverage:** `tests/regression/test_search_regression.py`:
+
+- `test_search_sql_produces_one_row_per_song` — captures the exact SQL `search_songs()` executes (via an event listener), re-executes it raw, and asserts one row per returned song. Failed before the fix (`assert 3 == 1`, the same song row appearing three times); passes after.
+- `test_multi_tag_song_returned_once_with_all_tags` — user-facing guard: a multi-tag song appears exactly once and still carries all its tags, proving the join removal doesn't affect tag delivery.
+
+Full suite after the fix: 23/23 passing.
+
 ### Bug 5 — The last song in a playlist never shows up
 
 **Affected service:** `services/playlist_service.py` — `get_playlist_songs()`
