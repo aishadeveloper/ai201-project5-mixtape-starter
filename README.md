@@ -95,6 +95,39 @@ Full issue descriptions are in the **Project 5 brief**. Read them carefully befo
 
 ---
 
+## Root Cause Analysis
+
+### Bug 5 — The last song in a playlist never shows up
+
+**Affected service:** `services/playlist_service.py` — `get_playlist_songs()`
+
+**Symptom:** Viewing any playlist (`GET /playlists/<id>/songs`) always showed one fewer song than the playlist actually contained. Whichever song was in the final position was silently missing, and a playlist with exactly one song appeared completely empty.
+
+**Root cause:** The database query in `get_playlist_songs()` was correct — it joined `playlist_entries`, filtered by playlist ID, and ordered by position, returning every song. The bug was in the return statement, which sliced off the last element of the result list:
+
+```python
+return [song.to_dict() for song in songs[:-1]]
+```
+
+In Python, `songs[:-1]` means "everything except the last item," so the highest-position song was always dropped after the query. Because the slice never raises an error (on a one-element list it just returns `[]`), the bug failed silently: no exception, no log entry — just a quietly truncated playlist. This also contradicted the function's own docstring, which states "This function returns all songs in the playlist."
+
+**The fix:** Remove the slice so the full ordered result is returned:
+
+```python
+return [song.to_dict() for song in songs]
+```
+
+**How it was diagnosed:** `tests/test_playlists.py::test_playlist_returns_all_songs` failed with `assert 4 == 5` — the returned list contained Tracks 1–4 of a 5-song playlist, in correct order. Correct ordering plus exactly one missing item at the end pointed away from the query (a wrong join or filter would scramble or drop arbitrary rows) and toward post-query truncation, which led straight to the `[:-1]` slice.
+
+**Regression coverage:** `tests/regression/test_playlist_regression.py` pins down the exact symptom so the bug can't be silently reintroduced:
+
+- `test_last_song_is_not_dropped` — asserts the song in the *final* position is present in the results.
+- `test_single_song_playlist_returns_that_song` — asserts a one-song playlist returns that song rather than an empty list (the worst case of the bug).
+
+Both tests failed before the fix, reproducing the bug's behavior, and pass after it. Full suite: all playlist tests green.
+
+---
+
 ## How to Read the Code
 
 Start with `models.py` to understand the data model. Then trace a feature through from its route to its service. For example:
