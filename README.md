@@ -199,6 +199,38 @@ db.session.query(Song)
 
 Full suite after the fix: 23/23 passing.
 
+### Bug 4 — Notified when a friend added my song to a playlist, but not when they rated it
+
+**Affected service:** `services/notification_service.py` — `rate_song()`
+
+**Symptom:** When a friend added your shared song to a playlist you received a notification, but when a friend rated your song, nothing arrived.
+
+**Root cause:** An omission, not broken logic. The two parallel flows in the same file end differently: `add_to_playlist()` finishes by calling `create_notification()` for the song's sharer (guarded so you don't notify yourself), while `rate_song()` validates, saves the rating, commits, and returns — it never calls `create_notification()` at all. Three details confirm the notification was intended: the file header says notifications "are generated when friends interact with a user's shared songs"; `create_notification()`'s docstring explicitly names `'song_rated'` as an expected type; and no code anywhere created a `'song_rated'` notification — the type existed only in documentation.
+
+**The fix:** Mirror the playlist flow at the end of `rate_song()`, after the commit:
+
+```python
+# Notify the person who shared the song (if it wasn't them who rated it)
+if song.shared_by != user_id:
+    create_notification(
+        user_id=song.shared_by,
+        notification_type="song_rated",
+        body=f"{rater.username} rated your song '{song.title}' {score}/5.",
+    )
+```
+
+Everything needed (`song`, `rater`, `score`) was already in scope. Like `add_to_playlist()`, this notifies on every rating action, including when a friend updates an existing rating — consistent with the existing flow and the smallest change that resolves the issue.
+
+**How it was diagnosed:** The report's shape — one flow works, the parallel flow doesn't — suggested an omission. A side-by-side comparison of `add_to_playlist()` and `rate_song()` showed the notification block present in one and absent in the other, and a search confirmed `'song_rated'` was never created anywhere in the codebase.
+
+**Regression coverage:** `tests/regression/test_notification_regression.py`:
+
+- `test_rating_notifies_song_sharer` — a friend's rating must produce exactly one `'song_rated'` notification for the sharer. Failed before the fix (`assert 0 == 1`); passes after.
+- `test_rating_own_song_does_not_notify` — guard: rating your own song must not notify you, mirroring the self-notification check in the playlist flow.
+- `test_rating_still_saved_correctly` — guard: the rating save path (score, user, song) is unaffected by the added notification logic.
+
+Full suite after the fix: 26/26 passing.
+
 ### Bug 5 — The last song in a playlist never shows up
 
 **Affected service:** `services/playlist_service.py` — `get_playlist_songs()`
